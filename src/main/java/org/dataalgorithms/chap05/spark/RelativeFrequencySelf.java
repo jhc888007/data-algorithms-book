@@ -1,4 +1,4 @@
-package org.dataalgorithms.chap03.spark;
+package org.dataalgorithms.chap05.spark;
 
 // STEP-0: import required classes and interfaces
 import org.dataalgorithms.util.SparkUtil;
@@ -8,8 +8,9 @@ import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.FlatMapFunction;
-import org.apache.spark.api.java.function.PairFunction;
+import org.apache.spark.api.java.function.PairFlatMapFunction;
 import org.apache.spark.api.java.function.Function2;
+import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.broadcast.Broadcast;
 
 import java.util.List;
@@ -18,6 +19,8 @@ import java.util.TreeMap;
 import java.util.SortedMap;
 import java.util.Iterator;
 import java.util.Collections;
+import java.util.ArrayList;
+
 
 /**
  * Assumption: for all input (K, V), K's are non-unique.
@@ -50,48 +53,108 @@ import java.util.Collections;
  * @author Mahmoud Parsian
  *
  */
-public class Top10NonUnique {
+public class RelativeFrequencySelf {
 
    public static void main(String[] args) throws Exception {
-      // STEP-1: handle input parameters
       if (args.length < 2) {
-         System.err.println("Usage: Top10 <input-path> <topN>");
+         System.err.println("Usage: Top10 <input-path> <output-path>");
          System.exit(1);
       }
       System.out.println("args[0]: <input-path>="+args[0]);
-      System.out.println("args[1]: <topN>="+args[1]);
-      final int N = Integer.parseInt(args[1]);
+      System.out.println("args[1]: <output-path>="+args[1]);
 
       // STEP-2: create a Java Spark Context object
       JavaSparkContext ctx = SparkUtil.createJavaSparkContext();
 
-      // STEP-3: broadcast the topN to all cluster nodes
-      final Broadcast<Integer> topN = ctx.broadcast(N);
-      // now topN is available to be read from all cluster nodes
-
-      // STEP-4: create an RDD from input
-      //    input record format:
-      //        <string-key><,><integer-value-count>
       JavaRDD<String> lines = ctx.textFile(args[0], 1);
-      //lines.saveAsTextFile(args[2]);
-    
-      // STEP-5: partition RDD 
-      // public JavaRDD<T> coalesce(int numPartitions)
-      // Return a new RDD that is reduced into numPartitions partitions.  
-      JavaRDD<String> rdd = lines.coalesce(9);
+      lines.saveAsTextFile(args[1]+"/0");
+     
+      JavaRDD<String> rdd = lines.coalesce(3,true);
+	  rdd.saveAsTextFile(args[1]+"/1");
        
-      // STEP-6: map input(T) into (K,V) pair
-      // PairFunction<T, K, V>   
-      // T => Tuple2<K, V>
-      JavaPairRDD<String,Integer> kv = rdd.mapToPair(new PairFunction<String,String,Integer>() {
-         @Override
-         public Tuple2<String,Integer> call(String s) {
-            String[] tokens = s.split(","); // url,789
-            return new Tuple2<String,Integer>(tokens[0], Integer.parseInt(tokens[1]));
+      JavaPairRDD<String,Tuple2<String,Integer>> pairs = rdd.flatMapToPair(
+         new PairFlatMapFunction<String,String,Tuple2<String,Integer>>() {
+		 private static final long serialVersionUID = 1L;
+
+		@Override
+         public Iterator<Tuple2<String,Tuple2<String,Integer>>> call(String s) {
+         	ArrayList<Tuple2<String,Tuple2<String,Integer>>> list = 
+				new ArrayList<Tuple2<String,Tuple2<String,Integer>>>();
+            String[] tokens = s.split(" ");
+            int l = tokens.length;
+			for (int i = 0; i < l; i++) {
+				for (int j = 0; j < l; j++) {
+					if (i != j) {
+						list.add(new Tuple2<String,Tuple2<String,Integer>>(tokens[i],
+							new Tuple2<String,Integer>(tokens[j],1)));
+					}
+				}
+			}
+            return list.iterator();
          }
       });
-      //kv.saveAsTextFile("/output/2");
+      pairs.saveAsTextFile(args[1]+"/2");
 
+	  JavaPairRDD<String, Integer> appears = pairs.mapToPair(
+	  	new PairFunction<Tuple2<String,Tuple2<String,Integer>>, String, Integer>() {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+	  	public Tuple2<String, Integer> call(Tuple2<String,Tuple2<String,Integer>> t) {
+	  	   return new Tuple2<String, Integer>(t._1, t._2._2);
+	  	}
+	  });
+	  appears.saveAsTextFile(args[1]+"/3");
+
+	  JavaPairRDD<String, Integer> sums = appears.reduceByKey(
+	  	new Function2<Integer,Integer,Integer>() {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public Integer call(Integer a, Integer b) {
+			return a + b;
+	  	}
+	  });
+	  sums.saveAsTextFile(args[1]+"/4");
+
+	  JavaPairRDD<String,Iterable<Tuple2<String,Integer>>> total_pairs = pairs.groupByKey();
+	  total_pairs.saveAsTextFile(args[1]+"/5");
+
+      JavaPairRDD<Tuple2<String,String>,Integer> scores = total_pairs.flatMapToPair(
+	  	new PairFlatMapFunction<Tuple2<String,Iterable<Tuple2<String,Integer>>>,
+	  	Tuple2<String,String>,Integer>() {
+		private static final long serialVersionUID = 1L;
+
+		@Override
+		public Iterator<Tuple2<Tuple2<String,String>,Integer>> call(
+			Tuple2<String,Iterable<Tuple2<String,Integer>>> t) {
+			String key1 = t._1;
+			Iterator<Tuple2<String,Integer>> iter = t._2.iterator();
+			TreeMap<String,Integer> map = new TreeMap<String,Integer>();
+			while (iter.hasNext()) {
+				Tuple2<String,Integer> tt = iter.next();
+				if (map.containsKey(tt._1)) {
+					map.put(tt._1, map.get(tt._1)+tt._2);
+				} else {
+					map.put(tt._1, tt._2);
+				}	
+			}
+			ArrayList<Tuple2<Tuple2<String,String>,Integer>> list =
+				new ArrayList<Tuple2<Tuple2<String,String>,Integer>>();
+			for (Map.Entry<String,Integer> entry: map.entrySet()) {
+				String k = entry.getKey();
+				Integer v = entry.getValue();
+				if (v > 0) {
+					list.add(new Tuple2<Tuple2<String,String>,Integer>(
+						new Tuple2<String,String>(key1, k), v));
+				}
+			}
+			return list.iterator();
+	  	}
+      });
+	  scores.saveAsTextFile(args[1]+"/6");
+
+      /*
       // STEP-7: reduce frequent K's
       JavaPairRDD<String, Integer> uniqueKeys = kv.reduceByKey(new Function2<Integer, Integer, Integer>() {
          @Override
@@ -140,7 +203,9 @@ public class Top10NonUnique {
       for (Map.Entry<Integer, String> entry : finalTopN.entrySet()) {
          System.out.println(entry.getKey() + "--" + entry.getValue());
       }
+      */
 
       System.exit(0);
    }
 }
+

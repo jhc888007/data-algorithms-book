@@ -54,6 +54,7 @@ public class SecondarySortDriver  extends Configured implements Tool {
 	* @throws Exception When there is communication problems with the job tracker.
 	*/
 	public static void main(String[] args) throws Exception {
+		System.out.println( "TEST: map reduce begin");
 		// Make sure there are exactly 2 parameters
 		if (args.length != 2) {
 			theLogger.warn("SecondarySortDriver <input-dir> <output-dir>");
